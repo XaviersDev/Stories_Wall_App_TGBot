@@ -150,14 +150,16 @@ class PendingCreation:
     def get(self, user_id: int) -> Optional[dict]:
         return self.pending.get(user_id)
     
-    def remove(self, user_id: int):
+    def remove(self, user_id: int, cleanup_files: bool = True):
         if user_id in self.pending:
-            # ### ИЗМЕНЕНИЕ: Добавлена очистка временной папки пользователя при отмене ###
-            creation_data = self.pending[user_id]
-            temp_dir_path = creation_data.get("temp_dir_path")
-            if temp_dir_path and Path(temp_dir_path).exists():
-                shutil.rmtree(temp_dir_path, ignore_errors=True)
-                logger.info(f"Очищена временная папка: {temp_dir_path}")
+            # ### ИСПРАВЛЕНИЕ: Добавлена проверка флага перед удалением файлов ###
+            if cleanup_files:
+                creation_data = self.pending[user_id]
+                temp_dir_path = creation_data.get("temp_dir_path")
+                if temp_dir_path and Path(temp_dir_path).exists():
+                    shutil.rmtree(temp_dir_path, ignore_errors=True)
+                    logger.info(f"Очищена временная папка: {temp_dir_path}")
+            
             del self.pending[user_id]
             logger.info(f"Удалено создание для пользователя {user_id}")
     
