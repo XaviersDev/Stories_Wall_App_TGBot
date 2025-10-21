@@ -29,12 +29,14 @@ WEBAPP_URL = "https://stories-wall-app.vercel.app/webapp.html"
 ADMIN_IDS = [5155608716]
 
 PRICE_21_PARTS = 15
+# ### ИЗМЕНЕНИЕ: Добавлены цены для новых опций ###
+PRICE_29_PARTS = 20 
+PRICE_42_PARTS = 30
 PRICE_AFTER_2_FREE = 10
 PRICE_LARGE_FILE = 10
 FILE_SIZE_LIMIT_MB = 4
 
-# ### ИЗМЕНЕНИЕ: Константы для очереди ###
-MAX_CONCURRENT_WORKERS = 1 # Установите 1 для строгой очереди. Можно увеличить на многоядерных серверах.
+MAX_CONCURRENT_WORKERS = 1
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,13 +49,10 @@ storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 router = Router()
 
-# ### ИЗМЕНЕНИЕ: Создаем очередь для обработки задач ###
 job_queue = asyncio.Queue()
-
 
 DATA_FILE = Path("storieswallbot/user_data.json")
 STATS_FILE = Path("storieswallbot/stats.json")
-# ### ИЗМЕНЕНИЕ: TEMP_DIR теперь основная папка для всех временных файлов ###
 TEMP_DIR = Path("storieswallbot/temp_processing")
 
 Path("storieswallbot").mkdir(exist_ok=True)
@@ -80,13 +79,15 @@ class UserData:
         if STATS_FILE.exists():
             with open(STATS_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
+        # ### ИЗМЕНЕНИЕ: Добавлены ключи для статистики по 29 и 42 частям ###
         return {
             "total_users": 0,
             "total_creations": 0,
             "total_paid": 0,
             "total_stars_earned": 0,
             "by_parts": {
-                "3": 0, "6": 0, "9": 0, "12": 0, "15": 0, "18": 0, "21": 0
+                "3": 0, "6": 0, "9": 0, "12": 0, "15": 0, "18": 0, "21": 0,
+                "29": 0, "42": 0
             }
         }
     
@@ -116,8 +117,8 @@ class UserData:
         
         self.stats["total_creations"] += 1
         parts_key = str(parts)
-        if parts_key in self.stats["by_parts"]:
-            self.stats["by_parts"][parts_key] += 1
+        # Улучшенная логика: не вызовет ошибку, если ключа нет
+        self.stats["by_parts"][parts_key] = self.stats["by_parts"].get(parts_key, 0) + 1
         
         self.save_data()
         self.save_stats()
@@ -152,7 +153,6 @@ class PendingCreation:
     
     def remove(self, user_id: int, cleanup_files: bool = True):
         if user_id in self.pending:
-            # ### ИСПРАВЛЕНИЕ: Добавлена проверка флага перед удалением файлов ###
             if cleanup_files:
                 creation_data = self.pending[user_id]
                 temp_dir_path = creation_data.get("temp_dir_path")
@@ -178,7 +178,6 @@ class CreateStates(StatesGroup):
     waiting_payment = State()
 
 
-# ... (все функции с клавиатурами остаются без изменений) ...
 def get_main_keyboard(user_id: int) -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton(
@@ -209,7 +208,7 @@ def get_parts_keyboard(user_id: int) -> InlineKeyboardMarkup:
     user = user_db.get_user(user_id)
     needs_payment = user["created_count"] >= 2 and not is_admin
     
-    keyboard = [
+    base_keyboard = [
         [
             InlineKeyboardButton(text="3 части", callback_data="parts_3"),
             InlineKeyboardButton(text="6 частей", callback_data="parts_6"),
@@ -222,23 +221,33 @@ def get_parts_keyboard(user_id: int) -> InlineKeyboardMarkup:
         ]
     ]
     
-    if is_admin or needs_payment:
-        keyboard.append([
-            InlineKeyboardButton(
-                text="21 часть 🔒" if needs_payment else "21 часть",
-                callback_data="parts_21"
-            )
-        ])
-    else:
-        keyboard.append([
-            InlineKeyboardButton(text="21 часть 🔒 (платно)", callback_data="parts_21")
-        ])
+    # ### ИЗМЕНЕНИЕ: Добавлены кнопки для 21, 29 и 42 частей ###
+    premium_text_21 = "21 часть"
+    premium_text_29 = "29 частей"
+    premium_text_42 = "42 части"
     
-    keyboard.append([
-        InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_creation")
-    ])
+    if is_admin:
+        pass # Admin sees simple text
+    elif needs_payment:
+        premium_text_21 += " 🔒"
+        premium_text_29 += " 🔒"
+        premium_text_42 += " 🔒"
+    else: # Has free creations left, but premium is still paid
+        premium_text_21 += " 🔒 (платно)"
+        premium_text_29 += " 🔒 (платно)"
+        premium_text_42 += " 🔒 (платно)"
+
+    premium_keyboard = [
+        [InlineKeyboardButton(text=premium_text_21, callback_data="parts_21")],
+        [
+            InlineKeyboardButton(text=premium_text_29, callback_data="parts_29"),
+            InlineKeyboardButton(text=premium_text_42, callback_data="parts_42")
+        ]
+    ]
+
+    cancel_button = [[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_creation")]]
     
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+    return InlineKeyboardMarkup(inline_keyboard=base_keyboard + premium_keyboard + cancel_button)
 
 
 def get_fit_mode_keyboard() -> InlineKeyboardMarkup:
@@ -280,10 +289,13 @@ async def cmd_start(message: Message):
         if free_left > 0:
             welcome_text += f"🎁 <b>У тебя осталось {free_left} бесплатных {'создание' if free_left == 1 else 'создания'}!</b>\n\n"
         else:
+            # ### ИЗМЕНЕНИЕ: Обновлен текст с ценами ###
             welcome_text += (
                 "💫 <b>Цены:</b>\n"
-                "• Стандартная стенка: 10 ⭐️\n"
-                "• Расширенная (21 часть): +15 ⭐️\n\n"
+                f"• Стандартная стенка: {PRICE_AFTER_2_FREE} ⭐️\n"
+                f"• Расширенная (21): +{PRICE_21_PARTS} ⭐️\n"
+                f"• Большая (29): +{PRICE_29_PARTS} ⭐️\n"
+                f"• Гигантская (42): +{PRICE_42_PARTS} ⭐️\n\n"
             )
     
     welcome_text += "Я помогу создать крутую стенку из сторис!\n\n"
@@ -351,10 +363,9 @@ async def handle_image(message: Message, state: FSMContext):
         file_size_mb = file.file_size / (1024 * 1024)
         logger.info(f"File size: {file_size_mb:.2f} MB for user {message.from_user.id}")
         
-        # ### ИЗМЕНЕНИЕ: Сохраняем файл на диск, а не в память ###
         temp_user_dir = TEMP_DIR / f"user_{message.from_user.id}_{uuid.uuid4()}"
         temp_user_dir.mkdir(exist_ok=True)
-        image_path = temp_user_dir / "source_image.jpg" # Имя не так важно
+        image_path = temp_user_dir / "source_image.jpg"
 
         await bot.download_file(file.file_path, destination=image_path)
         
@@ -371,7 +382,6 @@ async def handle_image(message: Message, state: FSMContext):
         is_large_file = file_size_mb > FILE_SIZE_LIMIT_MB
         is_admin = user_db.is_admin(message.from_user.id)
         
-        # ### ИЗМЕНЕНИЕ: Храним путь к файлу, а не его содержимое ###
         pending_creations.add(message.from_user.id, {
             "temp_dir_path": str(temp_user_dir),
             "image_path": str(image_path),
@@ -380,7 +390,6 @@ async def handle_image(message: Message, state: FSMContext):
             "is_large_file": is_large_file and not is_admin
         })
         
-        # ... (логика текста сообщения остается прежней)
         user = user_db.get_user(message.from_user.id)
         info_text = "✅ <b>Изображение получено!</b>\n\n"
         info_text += f"📐 Размер: {image_size[0]}x{image_size[1]}\n"
@@ -402,8 +411,10 @@ async def handle_image(message: Message, state: FSMContext):
             else:
                 total_base = PRICE_AFTER_2_FREE + (PRICE_LARGE_FILE if is_large_file else 0)
                 info_text += f"💰 Создание: {total_base} ⭐️\n"
-                info_text += "💎 21 часть: +15 ⭐️\n\n"
-        
+                info_text += f"💎 21 часть: +{PRICE_21_PARTS} ⭐️\n"
+                info_text += f"💎 29 частей: +{PRICE_29_PARTS} ⭐️\n"
+                info_text += f"💎 42 части: +{PRICE_42_PARTS} ⭐️\n\n"
+
         info_text += "Выбери количество частей:"
         
         await message.answer(
@@ -417,8 +428,6 @@ async def handle_image(message: Message, state: FSMContext):
         logger.error(f"Ошибка обработки изображения: {e}", exc_info=True)
         await message.answer("❌ Произошла ошибка. Попробуй снова.")
 
-
-# ... (хендлеры выбора частей и режима обрезки остаются почти без изменений) ...
 
 @router.callback_query(CreateStates.waiting_parts_selection, F.data.startswith("parts_"))
 async def handle_parts_selection(callback: CallbackQuery, state: FSMContext):
@@ -476,7 +485,6 @@ async def handle_fit_mode_selection(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 async def add_to_queue(user_id: int, state: FSMContext, is_paid: bool):
-    """Общая функция для добавления задачи в очередь."""
     creation_data = pending_creations.get(user_id)
     if not creation_data:
         await bot.send_message(user_id, "❌ Данные для создания не найдены. Начните заново.")
@@ -501,8 +509,6 @@ async def add_to_queue(user_id: int, state: FSMContext, is_paid: bool):
     }
     await job_queue.put(job)
     
-    # ### ИЗМЕНЕНИЕ: Удаляем из pending, но НЕ трогаем временные файлы ###
-    # Воркер сам их почистит после завершения работы.
     pending_creations.remove(user_id, cleanup_files=False)
     
     await state.clear()
@@ -521,25 +527,34 @@ async def handle_create_now(callback: CallbackQuery, state: FSMContext):
     is_admin = user_db.is_admin(callback.from_user.id)
     
     needs_payment = user["created_count"] >= 2 and not is_admin
-    needs_21_payment = parts == 21 and not is_admin
     needs_large_file_payment = is_large_file and not is_admin
+    
+    # ### ИЗМЕНЕНИЕ: Добавлена логика для 21, 29 и 42 частей ###
+    needs_premium_payment = parts in [21, 29, 42] and not is_admin
     
     total_price = 0
     if needs_payment:
         total_price += PRICE_AFTER_2_FREE
-    if needs_21_payment:
-        total_price += PRICE_21_PARTS
     if needs_large_file_payment:
         total_price += PRICE_LARGE_FILE
     
+    premium_price = 0
+    if needs_premium_payment:
+        if parts == 21:
+            premium_price = PRICE_21_PARTS
+        elif parts == 29:
+            premium_price = PRICE_29_PARTS
+        elif parts == 42:
+            premium_price = PRICE_42_PARTS
+    total_price += premium_price
+
     if total_price > 0:
-        # ... (логика платежа остается той же)
         price_text = f"💫 <b>Стенка из {parts} частей</b>\n\n"
         price_text += "<b>Стоимость:</b>\n"
         if needs_payment:
             price_text += f"• Создание: {PRICE_AFTER_2_FREE} ⭐️\n"
-        if needs_21_payment:
-            price_text += f"• Расширенная (21): {PRICE_21_PARTS} ⭐️\n"
+        if premium_price > 0:
+            price_text += f"• Расширенная ({parts}ч): {premium_price} ⭐️\n"
         if needs_large_file_payment:
             price_text += f"• Большой файл (>{FILE_SIZE_LIMIT_MB}МБ): {PRICE_LARGE_FILE} ⭐️\n"
         price_text += f"\n<b>Итого: {total_price} ⭐️</b>"
@@ -557,7 +572,6 @@ async def handle_create_now(callback: CallbackQuery, state: FSMContext):
         )
         await state.set_state(CreateStates.waiting_payment)
     else:
-        # ### ИЗМЕНЕНИЕ: Добавляем в очередь вместо прямой обработки ###
         await callback.message.delete()
         await add_to_queue(callback.from_user.id, state, is_paid=False)
 
@@ -602,7 +616,6 @@ async def successful_payment(message: Message, state: FSMContext):
         logger.info(f"Успешная оплата от {message.from_user.id}: {amount} звёзд")
         user_db.increment_paid(message.from_user.id, amount)
         
-        # ### ИЗМЕНЕНИЕ: Добавляем в очередь после оплаты ###
         await add_to_queue(message.from_user.id, state, is_paid=True)
     except Exception as e:
         logger.error(f"Error after payment: {e}", exc_info=True)
@@ -621,15 +634,15 @@ async def update_progress(user_id: int, message_id: int, parts: int, current: in
         )
         await bot.edit_message_text(text, chat_id=user_id, message_id=message_id, parse_mode="HTML")
     except Exception:
-        # Игнорируем ошибки, если сообщение не найдено или не изменилось
         pass
 
-# ### ИЗМЕНЕНИЕ: Основная функция обработки, которая выполняется в отдельном потоке ###
 def heavy_processing_task(image_path: str, parts: int, fit_mode: str, output_dir: Path) -> List[Path]:
     """Синхронная, ресурсоемкая задача по нарезке изображения."""
     PIECE_WIDTH, PIECE_HEIGHT = 1080, 1342
     TARGET_WIDTH, TARGET_HEIGHT = 1080, 1920
-    GRID_COLS, GRID_ROWS = 3, parts // 3
+    GRID_COLS = 3
+    # ### ВАЖНОЕ ИСПРАВЛЕНИЕ: Правильный расчет кол-ва рядов для чисел, не кратных 3 ###
+    GRID_ROWS = (parts + GRID_COLS - 1) // GRID_COLS # Это эквивалент math.ceil(parts / GRID_COLS)
     
     total_content_width = PIECE_WIDTH * GRID_COLS
     total_content_height = PIECE_HEIGHT * GRID_ROWS
@@ -652,6 +665,7 @@ def heavy_processing_task(image_path: str, parts: int, fit_mode: str, output_dir
         source_canvas.paste(resized, (offset_x, offset_y))
     
     output_files = []
+    # Цикл по фактическому числу частей, а не по рядам/колонкам
     for i in range(parts):
         row, col = i // GRID_COLS, i % GRID_COLS
         sx, sy = col * PIECE_WIDTH, row * PIECE_HEIGHT
@@ -668,7 +682,6 @@ def heavy_processing_task(image_path: str, parts: int, fit_mode: str, output_dir
     return output_files
 
 
-# ### ИЗМЕНЕНИЕ: Воркер, который разбирает очередь ###
 async def processing_worker(queue: asyncio.Queue):
     while True:
         job = await queue.get()
@@ -684,30 +697,24 @@ async def processing_worker(queue: asyncio.Queue):
             fit_mode = creation_data["fit_mode"]
             image_path = creation_data["image_path"]
             
-            # --- Генерация с прогрессом в отдельном потоке ---
-            # Это самая важная часть: выносим тяжелую задачу из основного потока asyncio
             output_dir = temp_dir_path / "output"
             output_dir.mkdir()
             
-            # Мы не можем обновлять прогресс из другого потока, поэтому просто показываем статус "в работе"
             await update_progress(user_id, progress_msg_id, parts, 0)
             
-            # Выполняем ресурсоемкую задачу в пуле потоков
             file_paths = await asyncio.to_thread(
                 heavy_processing_task, image_path, parts, fit_mode, output_dir
             )
             
-            await update_progress(user_id, progress_msg_id, parts, parts) # Показываем 100%
+            await update_progress(user_id, progress_msg_id, parts, parts)
             await asyncio.sleep(0.5)
             
-            # --- Архивирование ---
             await bot.edit_message_text("📦 Упаковка файлов...", chat_id=user_id, message_id=progress_msg_id)
             zip_path = temp_dir_path / f"storieswall_{parts}parts.zip"
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 for file_path in file_paths:
                     zipf.write(file_path, arcname=file_path.name)
             
-            # --- Отправка результата ---
             await bot.edit_message_text("📤 Отправка файла...", chat_id=user_id, message_id=progress_msg_id)
             zip_file = FSInputFile(zip_path)
             await bot.send_document(
@@ -723,7 +730,6 @@ async def processing_worker(queue: asyncio.Queue):
                 parse_mode="HTML"
             )
             
-            # Обновляем статистику только после успешной отправки
             user_db.increment_creations(user_id, parts)
             
             await bot.delete_message(user_id, progress_msg_id)
@@ -740,12 +746,12 @@ async def processing_worker(queue: asyncio.Queue):
                 "❌ Произошла ошибка при создании.\nПопробуй снова или свяжись с @AlliSighs"
             )
         finally:
-            # ### ИЗМЕНЕНИЕ: Обязательная очистка временных файлов ###
             shutil.rmtree(temp_dir_path, ignore_errors=True)
             logger.info(f"Очищена папка {temp_dir_path} для {user_id}")
             queue.task_done()
 
-# ... (все остальные хендлеры: stats, help, examples, admin, etc. остаются без изменений)
+# ... (остальной код остается без изменений) ...
+
 @router.callback_query(F.data == "stats")
 async def show_stats_callback(callback: CallbackQuery):
     user = user_db.get_user(callback.from_user.id)
@@ -783,7 +789,7 @@ async def show_help(callback: CallbackQuery):
         "📖 <b>Как создать стенку сторис</b>\n\n"
         "1️⃣ Нажми «Создать стенку»\n"
         "2️⃣ Отправь картинку боту (лучше файлом!)\n"
-        "3️⃣ Выбери количество частей (3-21)\n"
+        "3️⃣ Выбери количество частей (3-42)\n"
         "4️⃣ Выбери режим обрезки\n"
         "5️⃣ Оплати, если нужно\n"
         "6️⃣ Получи архив с частями\n"
@@ -845,8 +851,10 @@ async def back_to_main(callback: CallbackQuery):
         else:
             welcome_text += (
                 "💫 Цены:\n"
-                "• Стандартная: 10 ⭐️\n"
-                "• Расширенная (21): +15 ⭐️\n\n"
+                f"• Стандартная: {PRICE_AFTER_2_FREE} ⭐️\n"
+                f"• Расширенная (21): +{PRICE_21_PARTS} ⭐️\n"
+                f"• Большая (29): +{PRICE_29_PARTS} ⭐️\n"
+                f"• Гигантская (42): +{PRICE_42_PARTS} ⭐️\n\n"
             )
     
     welcome_text += "Создавай крутые стенки! 🎨"
@@ -913,7 +921,7 @@ async def cmd_help(message: Message):
         "📖 <b>Как создать стенку сторис</b>\n\n"
         "1️⃣ Нажми «Создать стенку»\n"
         "2️⃣ Отправь картинку боту (лучше файлом!)\n"
-        "3️⃣ Выбери количество частей (3-21)\n"
+        "3️⃣ Выбери количество частей (3-42)\n"
         "4️⃣ Оплати, если нужно\n"
         "5️⃣ Получи архив с частями\n"
         "6️⃣ Публикуй в профиль <b>В ОБРАТНОМ ПОРЯДКЕ</b> ⬆️\n\n"
@@ -950,10 +958,8 @@ async def cmd_stats(message: Message):
 async def main():
     dp.include_router(router)
     
-    # Запускаем веб-сервер для health checks
     await start_web_server()
     
-    # Запускаем воркеры
     workers = [
         asyncio.create_task(processing_worker(job_queue))
         for _ in range(MAX_CONCURRENT_WORKERS)
@@ -976,7 +982,6 @@ async def health_check(request):
     return web.Response(text="Bot is running!")
 
 async def start_web_server():
-    """Запускаем веб-сервер для health checks"""
     app = web.Application()
     app.router.add_get('/health', health_check)
     app.router.add_get('/', health_check)
@@ -991,7 +996,6 @@ async def start_web_server():
 
 
 if __name__ == "__main__":
-    # Очистка старых временных файлов при запуске
     if TEMP_DIR.exists():
         for item in TEMP_DIR.iterdir():
             if item.is_dir():
