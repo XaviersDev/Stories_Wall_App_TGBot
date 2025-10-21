@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: storieswall-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: PORT
+        value: 10000
+    disk:
+      name: storieswall-data
+      mountPath: /opt/render/project/src/storieswallbot
+      sizeGB: 1
